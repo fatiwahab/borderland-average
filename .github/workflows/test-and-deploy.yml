@@ -1,0 +1,61 @@
+# Runs the game tests on every push and pull request.
+# When the tests pass on main, the game in web/ is published to GitHub Pages.
+name: Test and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# don't let two deploys run at the same time
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check every Python file compiles
+        run: python -m py_compile web/game.py web/main.py web/test_game.py
+
+      - name: Run game tests
+        working-directory: web
+        run: python test_game.py
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect the files the website needs
+        run: |
+          mkdir _site
+          cp web/index.html web/style.css web/main.py web/game.py web/pyscript.toml _site/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

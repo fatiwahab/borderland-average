@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Borderland Average</title>
+  <link rel="stylesheet" href="https://pyscript.net/releases/2024.11.1/core.css">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script>
+    // tiny helper so Python can create a PeerJS connection
+    window.makePeer = (id) => (id ? new Peer(id) : new Peer());
+  </script>
+  <script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="suit">&#9830;</div>
+      <h1>Borderland Average</h1>
+      <p id="whoami" class="muted"></p>
+    </header>
+
+    <section id="loading" class="screen card">
+      <p>Loading the game&hellip;</p>
+    </section>
+
+    <section id="home" class="screen card" hidden>
+      <div class="rules">
+        <p>Everyone secretly picks a whole number from <b>0 to 100</b>.</p>
+        <p>The number closest to the <b>average</b> wins the round: <b>+1</b>. Everyone else: <b>&minus;1</b>.</p>
+        <p>If two or more players tie for closest, nobody wins and <b>everyone loses a point</b>.</p>
+        <p>A number picked by more than one player is <b>invalid</b>: those players can't win and lose a point.</p>
+        <p>Hit the average <b>exactly</b> and everyone else loses <b>2</b> points.</p>
+        <p>Down to two players? If one picks <b>0</b>, the other wins by picking <b>100</b>.</p>
+        <p>You start with <b>3</b> points. Reach 0 and you're out. Last one standing wins.</p>
+      </div>
+      <label for="name-input">Your name</label>
+      <input id="name-input" maxlength="20" autocomplete="off" placeholder="e.g. Arisu">
+      <button id="create-btn" class="primary">Create a room</button>
+      <div class="divider"><span>or join one</span></div>
+      <label for="code-input">Room code</label>
+      <input id="code-input" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="ABCD">
+      <button id="join-btn">Join room</button>
+      <p id="home-message" class="message" role="status"></p>
+    </section>
+
+    <section id="lobby" class="screen card" hidden>
+      <p class="muted">Room code</p>
+      <p id="lobby-code" class="code"></p>
+      <p class="muted small">Friends open this page and join with the code.</p>
+      <ul id="lobby-players" class="players"></ul>
+      <button id="start-btn" class="primary" hidden>Start game</button>
+      <p id="lobby-wait" class="muted"></p>
+    </section>
+
+    <section id="pick" class="screen card" hidden>
+      <h2 id="pick-title"></h2>
+      <form id="pick-form">
+        <label for="number-input">Your secret number (0&ndash;100)</label>
+        <input id="number-input" type="number" inputmode="numeric" min="0" max="100" step="1" autocomplete="off">
+        <button id="submit-btn" class="primary" type="submit">Lock it in</button>
+        <p id="pick-message" class="message" role="status"></p>
+      </form>
+      <p id="pick-waiting" class="muted" hidden></p>
+      <ul id="pick-players" class="players"></ul>
+      <p id="pick-notice" class="notice"></p>
+    </section>
+
+    <section id="reveal" class="screen card" hidden>
+      <h2 id="reveal-title"></h2>
+      <p id="reveal-headline" class="headline"></p>
+      <p id="reveal-average" class="muted"></p>
+      <p id="reveal-rule" class="notice"></p>
+      <table id="reveal-table"></table>
+      <p id="reveal-notice" class="notice"></p>
+      <button id="next-btn" class="primary" hidden></button>
+      <p id="reveal-wait" class="muted"></p>
+    </section>
+  </main>
+
+  <script type="mpy" src="main.py" config="pyscript.toml"></script>
+</body>
+</html>
