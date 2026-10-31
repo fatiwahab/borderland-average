@@ -37,6 +37,7 @@ names = {}           # guest id -> player name
 online = {}          # guest id -> is their browser connected
 attempts = {}        # guest id -> their join attempt id
 rejected_attempts = []
+attempts_made = [""]  # id of the room-creation attempt in progress, so old timers do nothing
 lobby = []
 players = {}
 spectators = []
@@ -286,6 +287,16 @@ def start_host(tries=0):
             connection_problem(code)
 
     db_set(room_path(), room, done=lambda *args: host_ready(True), fail=taken)
+
+    def give_up():
+        # Firebase waits forever if it can't reach the database, so don't leave people stuck
+        if is_host and not in_room and token == attempts_made[0]:
+            go_home("Couldn't reach the game server. Check your internet, turn off any ad or "
+                    "tracker blocker for this page, and try again.")
+
+    token = new_id(8, CODE_LETTERS)
+    attempts_made[0] = token
+    later(give_up, JOIN_TIMEOUT_MS)
 
 
 def host_ready(fresh):

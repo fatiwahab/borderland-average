@@ -51,6 +51,21 @@ jobs:
           mkdir _site
           cp web/index.html web/style.css web/main.py web/game.py web/pyscript.toml web/net.js web/firebase-config.js _site/
 
+      # Browsers keep each file for 10 minutes. Adding ?v=<commit> to every file the page loads
+      # means a browser never mixes an old main.py with a new index.html after a deploy.
+      - name: Stamp file links with this version
+        run: |
+          v="${GITHUB_SHA::7}"
+          cd _site
+          sed -i -e "s#href=\"style.css\"#href=\"style.css?v=$v\"#" \
+                 -e "s#src=\"net.js\"#src=\"net.js?v=$v\"#" \
+                 -e "s#src=\"main.py\" config=\"pyscript.toml\"#src=\"main.py?v=$v\" config=\"pyscript.toml?v=$v\"#" index.html
+          sed -i -e "s#\"./game.py\" = \"\"#\"./game.py?v=$v\" = \"./game.py\"#" pyscript.toml
+          sed -i -e "s#\"./firebase-config.js\"#\"./firebase-config.js?v=$v\"#" net.js
+          # fail the deploy if any link wasn't stamped
+          grep -q "main.py?v=$v" index.html && grep -q "net.js?v=$v" index.html && grep -q "style.css?v=$v" index.html
+          grep -q "game.py?v=$v" pyscript.toml && grep -q "firebase-config.js?v=$v" net.js
+
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5
