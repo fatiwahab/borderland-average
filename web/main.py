@@ -476,7 +476,7 @@ def finish_round():
 @when("click", "#start-btn")
 def on_start(event):
     global players, spectators, round_number, last_result, phase, notice
-    if not is_host or len(lobby) < 2:
+    if not is_host or len(lobby) < game.MIN_PLAYERS:
         return
     players = game.create_game(lobby)
     spectators = []
@@ -703,9 +703,14 @@ def render_lobby(state):
     count = len(state["players"])
     start = el("start-btn")
     start.hidden = not is_host
-    start.disabled = count < 2
+    start.disabled = count < game.MIN_PLAYERS
     if is_host:
-        el("lobby-wait").textContent = "Waiting for at least one more player." if count < 2 else f'{count} players ready.'
+        needed = game.MIN_PLAYERS - count
+        if needed > 0:
+            more = "1 more player" if needed == 1 else f'{needed} more players'
+            el("lobby-wait").textContent = f'Waiting for {more}. The game needs at least {game.MIN_PLAYERS}.'
+        else:
+            el("lobby-wait").textContent = f'{count} players ready.'
     else:
         el("lobby-wait").textContent = f'Waiting for {state["host"]} to start the game.'
     show_screen("lobby")

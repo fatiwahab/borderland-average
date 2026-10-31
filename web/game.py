@@ -12,12 +12,15 @@
 #  - with 2 players left, if one picks 0 and the other 100, the 100 wins
 
 START_SCORE = 3
+MIN_PLAYERS = 4
 LOWEST_NUMBER = 0
 HIGHEST_NUMBER = 100
 
 
 def create_game(names):
     #populate dictionary with each player's name and game stats
+    if len(names) < MIN_PLAYERS:
+        raise ValueError(f'The game needs at least {MIN_PLAYERS} players')
     players = {}
     for player_name in names:
         if player_name in players:

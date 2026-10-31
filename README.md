@@ -8,6 +8,7 @@ One player creates a room and shares the 4-letter code. Everyone else joins from
 
 ## Rules
 
+- You need at least 4 players to start.
 - Everyone secretly picks a whole number from 0 to 100.
 - The number closest to the average wins the round: +1. Everyone else: −1.
 - If two or more players tie for closest, nobody wins and everyone loses a point.
