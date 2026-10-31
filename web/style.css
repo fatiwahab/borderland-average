@@ -114,3 +114,24 @@ td.num { font-family: ui-monospace, Menlo, monospace; }
 .plus { color: var(--green); }
 .minus { color: var(--red); }
 tr.me td:first-child { font-weight: 700; }
+
+button.link {
+  width: auto;
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted);
+  border: none;
+  text-decoration: underline;
+}
+#rejoin-btn { margin: 0 0 8px; }
+.away { color: #f0b429; font-size: 13px; }
+button.remove {
+  width: auto;
+  margin: 0 0 0 8px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}

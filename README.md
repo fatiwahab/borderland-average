@@ -20,7 +20,7 @@ One player creates a room and shares the 4-letter code. Everyone else joins from
 
 - `web/game.py`: the game rules, in plain Python.
 - `web/main.py`: the screens and multiplayer, running in the browser with [PyScript](https://pyscript.net) (MicroPython).
-- Multiplayer uses [PeerJS](https://peerjs.com): browsers connect directly to the host's browser, so there's no server.
+- Multiplayer goes through a free [Firebase Realtime Database](https://firebase.google.com/docs/database). The host's browser runs the game; guests send their name and number to it through Firebase. `web/net.js` wraps Firebase, `web/firebase-config.js` holds the project settings, and `database.rules.json` makes sure only the host can read players' numbers.
 - `#Alice in borderlands - Complete Game.py`: the original terminal version.
 
 ## Running it locally
@@ -28,8 +28,16 @@ One player creates a room and shares the 4-letter code. Everyone else joins from
 ```
 cd web
 python3 test_game.py        # run the tests
-python3 -m http.server      # then open http://localhost:8000 in two windows
+python3 -m http.server      # then open http://localhost:8000
 ```
+
+To play locally without touching the real database, start the Firebase emulator from the project folder (needs Java) and add `?emulator` to the URL:
+
+```
+npx firebase-tools emulators:start --only auth,database --project demo-borderland
+```
+
+Open `http://localhost:8000/?emulator` in two different browsers (or a normal and a private window), because each player needs their own sign-in.
 
 ## Deploying
 

@@ -49,7 +49,7 @@ jobs:
       - name: Collect the files the website needs
         run: |
           mkdir _site
-          cp web/index.html web/style.css web/main.py web/game.py web/pyscript.toml _site/
+          cp web/index.html web/style.css web/main.py web/game.py web/pyscript.toml web/net.js web/firebase-config.js _site/
 
       - uses: actions/configure-pages@v6
 

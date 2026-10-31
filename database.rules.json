@@ -1,0 +1,30 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".write": "auth != null && (!data.exists() || data.child('host/uid').val() === auth.uid || data.child('host/created').val() < now - 86400000)",
+        "host": {
+          ".read": true
+        },
+        "state": {
+          ".read": true
+        },
+        "private": {
+          ".read": "auth != null && data.parent().child('host/uid').val() === auth.uid"
+        },
+        "inbox": {
+          ".read": "auth != null && data.parent().child('host/uid').val() === auth.uid",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && data.parent().parent().child('host').exists()",
+            ".validate": "!newData.exists() || (newData.child('name').isString() && newData.child('name').val().length <= 20 && (!newData.child('number').exists() || (newData.child('number').isNumber() && newData.child('number').val() >= 0 && newData.child('number').val() <= 100)))"
+          }
+        },
+        "rejected": {
+          "$uid": {
+            ".read": "auth != null && auth.uid === $uid"
+          }
+        }
+      }
+    }
+  }
+}

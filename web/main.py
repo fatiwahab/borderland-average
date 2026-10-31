@@ -1,8 +1,9 @@
 #Alice in borderlands - browser version
 # One player creates a room and becomes the host. The host's browser runs the
-# game (game.py) and sends the current state to everyone after every change.
-# Guests only send two kinds of message to the host: their name and their number.
-# Numbers never leave the host until everyone has picked, so nobody can peek.
+# game (game.py) and publishes what everyone is allowed to see to Firebase at
+# rooms/CODE/state. Guests write their name and number to their own slot at
+# rooms/CODE/inbox/THEIR_ID. The database rules (database.rules.json) only let
+# the host read the inbox, so nobody can peek at anyone else's number.
 import json
 
 from pyscript import document, window, when
@@ -10,24 +11,32 @@ from pyscript.ffi import create_proxy
 
 import game
 
-ROOM_PREFIX = "borderland-average-"
 CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ"  # no I or O, they look like 1 and 0
 MAX_PLAYERS = 12
+JOIN_TIMEOUT_MS = 15000
+SESSION_KEY = "borderland-session"
 SCREENS = ["loading", "home", "lobby", "pick", "reveal"]
 
+net = None
+my_uid = ""
 my_name = ""
 is_host = False
 room_code = ""
-peer = None
-leaving = False      # True when we chose to disconnect, so it isn't shown as an error
+in_room = False
+listeners = []       # functions that stop a Firebase listener
 last_round_shown = 0
+current_round = 0
 
 # guest only
-host_conn = None
+join_attempt = ""    # a fresh id for every join, so old rejections are ignored
+joined = False
+seen_state = False
 
 # host only
-conns = {}           # peer id -> connection
-names = {}           # peer id -> player name, once they have joined
+names = {}           # guest id -> player name
+online = {}          # guest id -> is their browser connected
+attempts = {}        # guest id -> their join attempt id
+rejected_attempts = []
 lobby = []
 players = {}
 spectators = []
@@ -67,52 +76,153 @@ def lives(score):
     return "&#9830;" * max(score, 0)
 
 
-def send(conn, message):
-    if conn is not None and conn.open:
-        conn.send(json.dumps(message))
+def clean_name(name):
+    # Firebase can't store these characters in keys, and names are used as keys
+    name = str(name).strip()
+    for bad in ".#$[]/":
+        name = name.replace(bad, "")
+    return name[:20]
+
+
+def new_id(length, letters):
+    text = ""
+    for _ in range(length):
+        text += letters[int(window.Math.random() * len(letters))]
+    return text
 
 
 def later(function, ms):
     window.setTimeout(create_proxy(function), ms)
 
 
-def go_home(message):
-    global peer, host_conn, is_host, leaving
-    leaving = True
-    if peer is not None:
-        peer.destroy()
-    peer = None
-    host_conn = None
-    is_host = False
-    el("whoami").textContent = ""
+def room_path(child=""):
+    path = f'rooms/{room_code}'
+    if child:
+        path += "/" + child
+    return path
+
+
+def parse(text):
+    text = str(text)
+    if not text:
+        return None
+    return json.loads(text)
+
+
+# ---------- talking to Firebase (see net.js) ----------
+
+def proxy(function):
+    return create_proxy(function) if function else None
+
+
+def connection_problem(code):
+    code = str(code)
+    if "PERMISSION_DENIED" in code.upper() or "permission" in code:
+        go_home("The game's database refused that. The room may have closed.")
+    else:
+        go_home(f'Connection problem ({code}). Check your internet and try again.')
+
+
+def db_set(path, value, done=None, fail=connection_problem):
+    net.set(path, json.dumps(value), proxy(done), proxy(fail))
+
+
+def db_update(path, value, done=None, fail=connection_problem):
+    net.update(path, json.dumps(value), proxy(done), proxy(fail))
+
+
+def db_remove(path, done=None, fail=None):
+    net.remove(path, proxy(done), proxy(fail))
+
+
+def db_listen(path, changed):
+    listeners.append(net.listen(path, create_proxy(changed), create_proxy(connection_problem)))
+
+
+def stop_listening():
+    while listeners:
+        stop = listeners.pop()
+        stop()
+
+
+def my_presence_path():
+    return room_path("host") if is_host else room_path("inbox/" + my_uid)
+
+
+def on_connected(connected):
+    # Firebase forgets onDisconnect after a reconnect, so set it up again each time
+    if not (connected and in_room):
+        return
+    path = my_presence_path()
+    net.onDisconnectUpdate(path, json.dumps({"online": False}))
+    db_update(path, {"online": True}, fail=lambda code: None)
+
+
+# ---------- remembering the room, so a reload can rejoin ----------
+
+def save_session():
+    try:
+        window.localStorage.setItem(SESSION_KEY, json.dumps({"room": room_code, "name": my_name, "host": is_host}))
+    except Exception:
+        pass
+
+
+def load_session():
+    try:
+        return parse(window.localStorage.getItem(SESSION_KEY) or "")
+    except Exception:
+        return None
+
+
+def clear_session():
+    try:
+        window.localStorage.removeItem(SESSION_KEY)
+    except Exception:
+        pass
+
+
+def show_rejoin():
+    session = load_session()
+    rejoin = el("rejoin-btn")
+    rejoin.hidden = not session
+    if session:
+        rejoin.textContent = f'Rejoin room {session["room"]} as {session["name"]}'
+
+
+# ---------- home screen ----------
+
+def set_home_busy(busy, message=""):
+    el("create-btn").disabled = busy
+    el("join-btn").disabled = busy
+    el("rejoin-btn").disabled = busy
     el("home-message").textContent = message
-    el("create-btn").disabled = False
-    el("join-btn").disabled = False
+
+
+def go_home(message):
+    global in_room, is_host, joined
+    if in_room:
+        net.cancelOnDisconnect(my_presence_path())
+    stop_listening()
+    in_room = False
+    is_host = False
+    joined = False
+    el("whoami").textContent = ""
+    el("away-notice").textContent = ""
+    el("leave-btn").hidden = True
+    show_rejoin()
+    set_home_busy(not my_uid, message)
     show_screen("home")
 
 
 def read_name():
     global my_name
-    name = el("name-input").value.strip()
+    name = clean_name(el("name-input").value)
     if not name:
         el("home-message").textContent = "Enter your name first."
         return False
     my_name = name
     return True
 
-
-def connection_error(err):
-    kind = str(err.type)
-    if kind == "peer-unavailable":
-        return f'No room with the code {room_code}. Check the code and try again.'
-    if kind in ("network", "server-error", "socket-error", "socket-closed"):
-        return "Couldn't reach the connection server. Check your internet and try again."
-    if kind == "browser-incompatible":
-        return "This browser can't make peer-to-peer connections. Try Chrome, Firefox or Safari."
-    return f'Connection problem ({kind}). Try again.'
-
-
-# ---------- home screen ----------
 
 @when("click", "#create-btn")
 def on_create(event):
@@ -133,84 +243,197 @@ def on_join(event):
     start_guest()
 
 
+@when("click", "#rejoin-btn")
+def on_rejoin(event):
+    global my_name, room_code
+    session = load_session()
+    if not session:
+        return
+    my_name = session["name"]
+    room_code = session["room"]
+    if session["host"]:
+        resume_host()
+    else:
+        start_guest()
+
+
+@when("click", "#leave-btn")
+def on_leave(event):
+    if is_host:
+        if not window.confirm("Leave and close the room for everyone?"):
+            return
+        db_remove(room_path())
+    else:
+        db_remove(room_path("inbox/" + my_uid))
+    clear_session()
+    go_home("")
+
+
 # ---------- host side ----------
 
-def new_code():
-    code = ""
-    for _ in range(4):
-        code += CODE_LETTERS[int(window.Math.random() * len(CODE_LETTERS))]
-    return code
-
-
-def start_host():
-    global peer, is_host, room_code, leaving, phase, lobby, players, spectators, notice
+def start_host(tries=0):
+    global room_code, is_host
     is_host = True
-    leaving = False
-    room_code = new_code()
-    phase = "lobby"
-    lobby = [my_name]
-    players = {}
-    spectators = []
-    notice = ""
-    conns.clear()
-    names.clear()
-    el("create-btn").disabled = True
-    el("join-btn").disabled = True
-    el("home-message").textContent = "Creating a room..."
-    peer = window.makePeer(ROOM_PREFIX + room_code)
-    peer.on("open", create_proxy(lambda peer_id: broadcast()))
-    peer.on("connection", create_proxy(on_guest_connected))
-    peer.on("error", create_proxy(on_host_error))
+    room_code = new_id(4, CODE_LETTERS)
+    set_home_busy(True, "Creating a room...")
+    room = {"host": {"uid": my_uid, "name": my_name, "online": True, "created": {".sv": "timestamp"}}}
+
+    def taken(code):
+        # the database rules refuse a code another host is using, so try another one
+        if tries < 5:
+            start_host(tries + 1)
+        else:
+            connection_problem(code)
+
+    db_set(room_path(), room, done=lambda *args: host_ready(True), fail=taken)
 
 
-def on_host_error(err):
-    if str(err.type) == "unavailable-id":
-        # someone else is already using this room code, so pick another one
-        peer.destroy()
-        start_host()
-    elif str(err.type) == "peer-unavailable":
-        pass  # a guest vanished before we could reach them; their close event cleans up
-    else:
-        go_home(connection_error(err))
+def host_ready(fresh):
+    global in_room, lobby, players, spectators, phase, round_number, last_result, notice
+    if fresh:
+        lobby = [my_name]
+        players = {}
+        spectators = []
+        phase = "lobby"
+        round_number = 0
+        last_result = None
+        notice = ""
+        names.clear()
+        online.clear()
+        attempts.clear()
+        rejected_attempts.clear()
+    in_room = True
+    save_session()
+    on_connected(True)
+    db_listen(room_path("inbox"), on_inbox)
+    publish()
 
 
-def on_guest_connected(conn):
-    peer_id = str(conn.peer)
-    conns[peer_id] = conn
-    conn.on("data", create_proxy(lambda data: on_guest_message(peer_id, data)))
-    conn.on("close", create_proxy(lambda *args: on_guest_left(peer_id)))
+def resume_host():
+    global is_host
+    is_host = True
+    set_home_busy(True, f'Rejoining room {room_code}...')
+
+    def restore(text):
+        global lobby, players, spectators, phase, round_number, last_result, notice
+        saved = parse(text)
+        if not saved:
+            clear_session()
+            go_home(f'Room {room_code} has ended.')
+            return
+        # Firebase drops empty lists and None values, so fill them back in
+        lobby = saved.get("lobby", [])
+        players = saved.get("players", {})
+        for name in players.keys():
+            if "number" not in players[name]:
+                players[name]["number"] = None
+        spectators = saved.get("spectators", [])
+        phase = saved.get("phase", "lobby")
+        round_number = saved.get("round", 0)
+        last_result = complete_result(saved.get("result"))
+        notice = saved.get("notice", "")
+        names.clear()
+        names.update(saved.get("names", {}))
+        attempts.clear()
+        attempts.update(saved.get("attempts", {}))
+        rejected_attempts.clear()
+        rejected_attempts.extend(saved.get("rejected", []))
+        online.clear()
+        host_ready(False)
+
+    net.get(room_path("private"), create_proxy(restore),
+            create_proxy(lambda code: (clear_session(), go_home(f'Room {room_code} has ended.'))))
 
 
-def on_guest_message(peer_id, data):
-    try:
-        message = json.loads(str(data))
-    except ValueError:
-        return
-    if message.get("type") == "join":
-        handle_join(peer_id, str(message.get("name", "")).strip()[:20])
-    elif message.get("type") == "guess" and peer_id in names:
-        handle_number(names[peer_id], message.get("number"))
+def on_inbox(text):
+    inbox = parse(text) or {}
+    changed = False
+    # a guest whose slot has gone has left the room
+    for uid in list(names.keys()):
+        if uid not in inbox:
+            changed = player_left(uid, f'{names[uid]} left the room.') or changed
+    for uid in inbox.keys():
+        entry = inbox[uid]
+        if uid in names:
+            is_online = entry.get("online", True) is not False
+            if online.get(uid) != is_online:
+                online[uid] = is_online
+                changed = True
+            name = names[uid]
+            number = entry.get("number")
+            if (phase == "pick" and entry.get("round") == round_number and number is not None
+                    and name in players and players[name]["number"] is None):
+                try:
+                    game.submit_number(players, name, number)
+                    changed = True
+                except ValueError:
+                    pass
+        elif entry.get("attempt", "") not in rejected_attempts:
+            changed = handle_join(uid, entry) or changed
+    if phase == "pick" and players and game.all_submitted(players):
+        finish_round()
+    elif changed:
+        publish()
 
 
-def reject(peer_id, reason):
-    conn = conns.pop(peer_id, None)
-    send(conn, {"type": "error", "message": reason})
-    later(lambda: conn.close(), 1000)
+def reject(uid, attempt, reason):
+    rejected_attempts.append(attempt)
+    db_set(room_path("rejected/" + uid), {"attempt": attempt, "reason": reason}, fail=lambda code: None)
 
 
-def handle_join(peer_id, name):
+def handle_join(uid, entry):
+    global notice
+    name = clean_name(entry.get("name", ""))
+    attempt = entry.get("attempt", "")
     if phase != "lobby":
-        reject(peer_id, "That game has already started. Ask the host to start a new one.")
+        reject(uid, attempt, "That game has already started. Ask the host to start a new one.")
     elif not name:
-        reject(peer_id, "Enter your name first.")
+        reject(uid, attempt, "Enter your name first.")
     elif name in lobby:
-        reject(peer_id, f'Someone in that room is already called {name}. Pick another name.')
+        reject(uid, attempt, f'Someone in that room is already called {name}. Pick another name.')
     elif len(lobby) >= MAX_PLAYERS:
-        reject(peer_id, f'That room is full ({MAX_PLAYERS} players).')
+        reject(uid, attempt, f'That room is full ({MAX_PLAYERS} players).')
     else:
-        names[peer_id] = name
+        names[uid] = name
+        attempts[uid] = attempt
+        online[uid] = entry.get("online", True) is not False
         lobby.append(name)
-        broadcast()
+        notice = ""
+        return True
+    return False
+
+
+def player_left(uid, message):
+    global phase, notice
+    name = names.pop(uid, None)
+    online.pop(uid, None)
+    attempts.pop(uid, None)
+    if name is None:
+        return False
+    notice = message
+    if name in lobby:
+        lobby.remove(name)
+    if name in spectators:
+        spectators.remove(name)
+    if name in players:
+        game.remove_player(players, name)
+        if phase in ("pick", "reveal") and game.is_game_over(players):
+            phase = "over"
+    return True
+
+
+def remove_player(uid):
+    # the host can remove someone, e.g. a player whose phone died mid-round
+    name = names.get(uid)
+    if name is None:
+        return
+    reject(uid, attempts.get(uid, ""), "The host removed you from the game.")
+    player_left(uid, f'{name} was removed.')
+    db_remove(room_path("inbox/" + uid))
+    if phase == "pick" and players and game.all_submitted(players):
+        finish_round()
+    else:
+        publish()
 
 
 def handle_number(name, number):
@@ -223,7 +446,7 @@ def handle_number(name, number):
     if game.all_submitted(players):
         finish_round()
     else:
-        broadcast()
+        publish()
 
 
 def finish_round():
@@ -236,28 +459,7 @@ def finish_round():
         phase = "over"
     else:
         phase = "reveal"
-    broadcast()
-
-
-def on_guest_left(peer_id):
-    global phase, notice
-    conns.pop(peer_id, None)
-    name = names.pop(peer_id, None)
-    if name is None or leaving:
-        return
-    notice = f'{name} left the game.'
-    if name in lobby:
-        lobby.remove(name)
-    if name in spectators:
-        spectators.remove(name)
-    if name in players:
-        game.remove_player(players, name)
-        if phase in ("pick", "reveal") and game.is_game_over(players):
-            phase = "over"
-        elif phase == "pick" and game.all_submitted(players):
-            finish_round()
-            return
-    broadcast()
+    publish()
 
 
 @when("click", "#start-btn")
@@ -271,7 +473,7 @@ def on_start(event):
     last_result = None
     notice = ""
     phase = "pick"
-    broadcast()
+    publish()
 
 
 @when("click", "#next-btn")
@@ -284,12 +486,34 @@ def on_next(event):
         round_number += 1
         phase = "pick"
     elif phase == "over":
-        # new game with everyone who is still connected
+        # new game with everyone who is still in the room
         lobby = [my_name]
         for name in names.values():
             lobby.append(name)
         phase = "lobby"
-    broadcast()
+    publish()
+
+
+def on_remove_click(event):
+    uid = event.target.getAttribute("data-remove")
+    if is_host and uid:
+        remove_player(str(uid))
+
+
+el("lobby-players").addEventListener("click", create_proxy(on_remove_click))
+el("pick-players").addEventListener("click", create_proxy(on_remove_click))
+
+
+def uid_of(name):
+    for uid in names.keys():
+        if names[uid] == name:
+            return uid
+    return None
+
+
+def is_away(name):
+    uid = uid_of(name)
+    return uid is not None and online.get(uid) is False
 
 
 def public_state():
@@ -297,16 +521,15 @@ def public_state():
     rows = []
     if phase == "lobby":
         for name in lobby:
-            rows.append({"name": name, "score": game.START_SCORE, "picked": False})
+            rows.append({"name": name, "score": game.START_SCORE, "picked": False, "away": is_away(name)})
     else:
         for name in players.keys():
             rows.append({"name": name, "score": players[name]["score"],
-                         "picked": players[name]["number"] is not None})
+                         "picked": players[name]["number"] is not None, "away": is_away(name)})
     return {
-        "type": "state",
         "phase": phase,
         "room": room_code,
-        "host": lobby[0] if lobby else my_name,
+        "host": my_name,
         "round": round_number,
         "players": rows,
         "spectators": spectators,
@@ -316,64 +539,142 @@ def public_state():
     }
 
 
-def broadcast():
+def private_state():
+    # only the host can read this; it lets the host reload the page without ending the game
+    return {
+        "lobby": lobby,
+        "players": players,
+        "spectators": spectators,
+        "phase": phase,
+        "round": round_number,
+        "result": last_result,
+        "notice": notice,
+        "names": names,
+        "attempts": attempts,
+        "rejected": rejected_attempts,
+    }
+
+
+def publish():
     state = public_state()
-    text = json.dumps(state)
-    for peer_id in names.keys():
-        conn = conns.get(peer_id)
-        if conn is not None and conn.open:
-            conn.send(text)
+    db_update(room_path(), {"state": state, "private": private_state()})
     render(state)
 
 
 # ---------- guest side ----------
 
 def start_guest():
-    global peer, is_host, leaving
+    global is_host, joined, seen_state
     is_host = False
-    leaving = False
-    el("create-btn").disabled = True
-    el("join-btn").disabled = True
-    el("home-message").textContent = f'Joining room {room_code}...'
-    peer = window.makePeer(None)
-    peer.on("open", create_proxy(lambda peer_id: connect_to_host()))
-    peer.on("error", create_proxy(lambda err: go_home(connection_error(err))))
+    joined = False
+    seen_state = False
+    set_home_busy(True, f'Joining room {room_code}...')
+
+    def checked(text):
+        host = parse(text)
+        if not host:
+            clear_session()
+            go_home(f'No room with the code {room_code}. Check the code and try again.')
+        else:
+            send_join()
+
+    net.get(room_path("host"), create_proxy(checked), create_proxy(connection_problem))
 
 
-def connect_to_host():
-    global host_conn
-    host_conn = peer.connect(ROOM_PREFIX + room_code)
-    host_conn.on("open", create_proxy(lambda *args: send(host_conn, {"type": "join", "name": my_name})))
-    host_conn.on("data", create_proxy(on_host_message))
-    host_conn.on("close", create_proxy(on_host_left))
+def send_join():
+    global join_attempt, in_room
+    join_attempt = new_id(8, CODE_LETTERS)
+    attempt = join_attempt
+    in_room = True
+    db_set(room_path("inbox/" + my_uid), {"name": my_name, "attempt": attempt, "online": True})
+    on_connected(True)
+    db_listen(room_path("state"), on_state)
+    db_listen(room_path("rejected/" + my_uid), on_rejected)
+    db_listen(room_path("host/online"), on_host_online)
+    el("home-message").textContent = f'Joining room {room_code}... waiting for the host.'
+
+    def give_up():
+        if in_room and not joined and join_attempt == attempt:
+            db_remove(room_path("inbox/" + my_uid))
+            go_home("The host's page isn't responding. Ask them to keep the game open, then try again.")
+
+    later(give_up, JOIN_TIMEOUT_MS)
 
 
-def on_host_message(data):
-    try:
-        message = json.loads(str(data))
-    except ValueError:
+def on_rejected(text):
+    rejection = parse(text)
+    if rejection and rejection.get("attempt") == join_attempt:
+        db_remove(room_path("inbox/" + my_uid))
+        clear_session()
+        go_home(rejection.get("reason", "Couldn't join that room."))
+
+
+def on_host_online(text):
+    away = parse(text) is False
+    el("away-notice").textContent = "The host's connection dropped. Waiting for them to come back..." if away else ""
+
+
+def on_state(text):
+    global joined, seen_state
+    state = parse(text)
+    if state is None:
+        if seen_state:
+            clear_session()
+            go_home("The host closed the room.")
         return
-    if message.get("type") == "state":
-        render(message)
-    elif message.get("type") == "error":
-        go_home(message.get("message", "Couldn't join that room."))
+    seen_state = True
+    state = complete_state(state)
+    in_game = my_name in state["spectators"]
+    for row in state["players"]:
+        if row["name"] == my_name:
+            in_game = True
+    if not joined:
+        if not in_game:
+            return  # the host hasn't let us in yet
+        joined = True
+        save_session()
+    render(state)
 
 
-def on_host_left(*args):
-    if not leaving:
-        go_home("The host left, so the game ended.")
+def complete_result(result):
+    # Firebase drops empty lists, so put them back
+    if result:
+        for key in ("winners", "tied", "duplicates", "eliminated"):
+            result[key] = result.get(key, [])
+    return result
+
+
+def complete_state(state):
+    state["players"] = state.get("players", [])
+    state["spectators"] = state.get("spectators", [])
+    state["result"] = complete_result(state.get("result"))
+    state["winner"] = state.get("winner")
+    state["notice"] = state.get("notice", "")
+    return state
 
 
 # ---------- drawing the screens (same for host and guests) ----------
 
 def render(state):
+    global current_round
+    current_round = state["round"]
     el("whoami").textContent = f'Room {state["room"]} · playing as {my_name}'
+    el("leave-btn").hidden = False
     if state["phase"] == "lobby":
         render_lobby(state)
     elif state["phase"] == "pick":
         render_pick(state)
     else:
         render_reveal(state)
+
+
+def player_extras(row):
+    # "away" tag for everyone, plus a remove button the host can use
+    html = ' <span class="away">away</span>' if row.get("away") else ""
+    uid = uid_of(row["name"]) if is_host else None
+    if uid:
+        html += f'<button class="remove" data-remove="{esc(uid)}">remove</button>'
+    return html
 
 
 def render_lobby(state):
@@ -385,7 +686,8 @@ def render_lobby(state):
             tags.append("host")
         if row["name"] == my_name:
             tags.append("you")
-        html += f'<li><span>{esc(row["name"])}</span><span class="tag">{", ".join(tags)}</span></li>'
+        html += (f'<li><span>{esc(row["name"])}{player_extras(row)}</span>'
+                 f'<span class="tag">{", ".join(tags)}</span></li>')
     el("lobby-players").innerHTML = html
     count = len(state["players"])
     start = el("start-btn")
@@ -428,7 +730,8 @@ def render_pick(state):
     html = ""
     for row in state["players"]:
         status = '<span class="done">locked in</span>' if row["picked"] else '<span class="tag">thinking...</span>'
-        html += f'<li><span>{esc(row["name"])} <span class="lives">{lives(row["score"])}</span></span>{status}</li>'
+        html += (f'<li><span>{esc(row["name"])} <span class="lives">{lives(row["score"])}</span>'
+                 f'{player_extras(row)}</span>{status}</li>')
     for name in state["spectators"]:
         html += f'<li><span class="out">{esc(name)}</span><span class="tag">out</span></li>'
     el("pick-players").innerHTML = html
@@ -448,7 +751,7 @@ def on_submit_number(event):
     if is_host:
         handle_number(my_name, int(text))
     else:
-        send(host_conn, {"type": "guess", "number": int(text)})
+        db_update(room_path("inbox/" + my_uid), {"number": int(text), "round": current_round})
 
 
 def render_reveal(state):
@@ -526,13 +829,29 @@ def render_reveal(state):
     show_screen("reveal")
 
 
-def on_page_closed(event):
-    # closing the tab doesn't always tell the other browsers, so say goodbye properly
-    global leaving
-    leaving = True
-    if peer is not None:
-        peer.destroy()
+# ---------- start up ----------
+
+def on_signed_in(uid):
+    global my_uid
+    my_uid = str(uid)
+    net.onConnected(create_proxy(on_connected))
+    set_home_busy(False)
+    show_rejoin()
 
 
-window.addEventListener("pagehide", create_proxy(on_page_closed))
-show_screen("home")
+def start():
+    global net
+    status = str(window.netStatus)
+    show_screen("home")
+    if status == "not-configured":
+        set_home_busy(True, "This copy of the game isn't connected to Firebase yet (see web/firebase-config.js).")
+    elif status != "ready":
+        set_home_busy(True, "Couldn't load the connection service. Check your internet and reload the page.")
+    else:
+        net = window.net
+        set_home_busy(True, "Connecting...")
+        net.signIn(create_proxy(on_signed_in),
+                   create_proxy(lambda code: set_home_busy(True, f'Couldn\'t connect ({code}). Reload to try again.')))
+
+
+start()

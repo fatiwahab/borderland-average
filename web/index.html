@@ -6,11 +6,8 @@
   <title>Borderland Average</title>
   <link rel="stylesheet" href="https://pyscript.net/releases/2024.11.1/core.css">
   <link rel="stylesheet" href="style.css">
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-  <script>
-    // tiny helper so Python can create a PeerJS connection
-    window.makePeer = (id) => (id ? new Peer(id) : new Peer());
-  </script>
+  <script>window.netStatus = "loading";</script>
+  <script type="module" src="net.js"></script>
   <script type="module" src="https://pyscript.net/releases/2024.11.1/core.js"></script>
 </head>
 <body>
@@ -19,6 +16,8 @@
       <div class="suit">&#9830;</div>
       <h1>Borderland Average</h1>
       <p id="whoami" class="muted"></p>
+      <p id="away-notice" class="notice"></p>
+      <button id="leave-btn" class="link" hidden>Leave room</button>
     </header>
 
     <section id="loading" class="screen card">
@@ -35,6 +34,7 @@
         <p>Down to two players? If one picks <b>0</b>, the other wins by picking <b>100</b>.</p>
         <p>You start with <b>3</b> points. Reach 0 and you're out. Last one standing wins.</p>
       </div>
+      <button id="rejoin-btn" class="primary" hidden></button>
       <label for="name-input">Your name</label>
       <input id="name-input" maxlength="20" autocomplete="off" placeholder="e.g. Arisu">
       <button id="create-btn" class="primary">Create a room</button>
